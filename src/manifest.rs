@@ -247,6 +247,77 @@ impl Manifest {
 
         self.content = output;
     }
+
+    pub fn remove(&mut self, package: &str) {
+        let mut lines_out: Vec<String> = Vec::new();
+
+        let mut in_patch = false;
+        let mut current_section: Vec<String> = Vec::new();
+        let mut section_has_entries = false;
+        let mut removed = false;
+
+        for raw_line in self.content.lines() {
+            let trimmed = raw_line.trim();
+
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                if in_patch {
+                    if section_has_entries {
+                        lines_out.append(&mut current_section);
+                    }
+                    current_section.clear();
+                    section_has_entries = false;
+                }
+
+                let header = &trimmed[1..trimmed.len() - 1];
+                in_patch = header.strip_prefix("patch.").is_some();
+
+                if in_patch {
+                    current_section.push(raw_line.to_string());
+                } else {
+                    lines_out.push(raw_line.to_string());
+                }
+                continue;
+            }
+
+            if !in_patch {
+                lines_out.push(raw_line.to_string());
+                continue;
+            }
+
+            let Some(first_non_ws) = raw_line.find(|c: char| !c.is_whitespace()) else {
+                current_section.push(raw_line.to_string());
+                continue;
+            };
+
+            let (_, rest) = raw_line.split_at(first_non_ws);
+            let rest_for_parse = if let Some(stripped) = rest.strip_prefix('#') {
+                stripped.trim_start()
+            } else {
+                rest
+            };
+
+            let Some((name, _)) = rest_for_parse.split_once('=') else {
+                current_section.push(raw_line.to_string());
+                continue;
+            };
+
+            if name.trim() == package {
+                removed = true;
+                continue;
+            }
+
+            current_section.push(raw_line.to_string());
+            section_has_entries = true;
+        }
+
+        if in_patch && section_has_entries {
+            lines_out.append(&mut current_section);
+        }
+
+        if removed {
+            self.content = lines_out.join("\n");
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -468,6 +539,38 @@ xtask-watch = { path = "../xtask-watch" }"#;
                     active: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn remove() {
+        let mut manifest = manifest();
+        manifest.remove("baz");
+
+        assert_eq!(
+            manifest.patches(),
+            vec![
+                Patch {
+                    source: "https://github.com/user/bar.git".to_string(),
+                    package: "bar".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/foo.git".to_string(),
+                    package: "foo".to_string(),
+                    active: false,
+                },
+                Patch {
+                    source: "crates-io".to_string(),
+                    package: "xtask-watch".to_string(),
+                    active: true,
+                },
+            ]
+        );
+        assert!(
+            !manifest
+                .content
+                .contains("[patch.\"https://github.com/user/baz.git\"]")
         );
     }
 }
