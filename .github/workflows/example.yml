@@ -1,0 +1,41 @@
+name: Example
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "examples/demo/**"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "examples/demo/**"
+
+defaults:
+  run:
+    working-directory: examples/demo/my-project
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      - name: cargo build
+        run: cargo build --workspace
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --tests -- -D warnings
