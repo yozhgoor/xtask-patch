@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug)]
 pub struct Manifest {
@@ -87,6 +90,104 @@ impl Manifest {
         }
 
         patches
+    }
+
+    pub fn add(&mut self, source: Option<String>, package: &str, path: &Path) {
+        let target_source = source.unwrap_or_else(|| "crates-io".to_string());
+        let target_header = if target_source == "crates-io" {
+            "[patch.crates-io]".to_string()
+        } else {
+            format!("[patch.\"{}\"]", target_source)
+        };
+        let new_line = format!("{package} = {{ path = \"{}\" }}", path.display());
+
+        let mut lines_out: Vec<String> = Vec::new();
+        let mut in_patch = false;
+        let mut in_target = false;
+        let mut target_section_found = false;
+        let mut target_entry_found = false;
+
+        for raw_line in self.content.lines() {
+            let trimmed = raw_line.trim();
+
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                if in_target && !target_entry_found {
+                    lines_out.push(new_line.clone());
+                    target_entry_found = true;
+                }
+
+                let header = &trimmed[1..trimmed.len() - 1];
+                if let Some(rest) = header.strip_prefix("patch.") {
+                    let source = rest.trim();
+                    let source = if let Some(s) =
+                        source.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+                    {
+                        s
+                    } else if let Some(s) =
+                        source.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
+                    {
+                        s
+                    } else {
+                        source
+                    };
+                    in_patch = true;
+                    in_target = source == target_source;
+                    if in_target {
+                        target_section_found = true;
+                    }
+                } else {
+                    in_patch = false;
+                    in_target = false;
+                }
+
+                lines_out.push(raw_line.to_string());
+                continue;
+            }
+
+            if !in_patch {
+                lines_out.push(raw_line.to_string());
+                continue;
+            }
+
+            let Some(first_non_ws) = raw_line.find(|c: char| !c.is_whitespace()) else {
+                lines_out.push(raw_line.to_string());
+                continue;
+            };
+
+            let (leading, rest) = raw_line.split_at(first_non_ws);
+            let rest_for_parse = if let Some(stripped) = rest.strip_prefix('#') {
+                stripped.trim_start()
+            } else {
+                rest
+            };
+
+            let Some((name, _)) = rest_for_parse.split_once('=') else {
+                lines_out.push(raw_line.to_string());
+                continue;
+            };
+
+            if name.trim() == package && in_target {
+                lines_out.push(format!("{leading}{new_line}"));
+                target_entry_found = true;
+                continue;
+            }
+
+            lines_out.push(raw_line.to_string());
+        }
+
+        if in_target && !target_entry_found {
+            lines_out.push(new_line.clone());
+        }
+
+        if !target_section_found {
+            if !lines_out.last().map(|l| l.is_empty()).unwrap_or(true) {
+                lines_out.push(String::new());
+            }
+            lines_out.push(target_header);
+            lines_out.push(new_line);
+        }
+
+        self.content = lines_out.join("\n");
     }
 
     pub fn toggle(&mut self, package: &str) {
@@ -222,6 +323,88 @@ xtask-watch = { path = "../xtask-watch" }"#;
                 },
             ]
         );
+    }
+
+    #[test]
+    fn add_crates_io() {
+        let mut manifest = manifest();
+        let path = PathBuf::from("../rab");
+        manifest.add(None, "rab", &path);
+
+        assert_eq!(
+            manifest.patches(),
+            vec![
+                Patch {
+                    source: "https://github.com/user/bar.git".to_string(),
+                    package: "bar".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/baz.git".to_string(),
+                    package: "baz".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/foo.git".to_string(),
+                    package: "foo".to_string(),
+                    active: false,
+                },
+                Patch {
+                    source: "crates-io".to_string(),
+                    package: "xtask-watch".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "crates-io".to_string(),
+                    package: "rab".to_string(),
+                    active: true,
+                },
+            ]
+        );
+        assert!(manifest.content.contains("rab = { path = \"../rab\" }"));
+    }
+
+    #[test]
+    fn add_repository() {
+        let mut manifest = manifest();
+        let path = PathBuf::from("../rab");
+        manifest.add(
+            Some("https://github.com/user/rab.git".to_string()),
+            "rab",
+            &path,
+        );
+
+        assert_eq!(
+            manifest.patches(),
+            vec![
+                Patch {
+                    source: "https://github.com/user/bar.git".to_string(),
+                    package: "bar".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/baz.git".to_string(),
+                    package: "baz".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/foo.git".to_string(),
+                    package: "foo".to_string(),
+                    active: false,
+                },
+                Patch {
+                    source: "crates-io".to_string(),
+                    package: "xtask-watch".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/rab.git".to_string(),
+                    package: "rab".to_string(),
+                    active: true,
+                },
+            ]
+        );
+        assert!(manifest.content.contains("rab = { path = \"../rab\" }"));
     }
 
     #[test]
