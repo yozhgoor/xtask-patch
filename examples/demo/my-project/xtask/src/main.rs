@@ -15,12 +15,8 @@ struct Cli {
 #[derive(Subcommand, Clone, Debug)]
 enum Subcommands {
     Add(Add),
-    Toggle {
-        package: String,
-    },
-    Remove {
-        package: String,
-    },
+    Toggle { package: String },
+    Remove { package: String },
 }
 
 #[derive(Args, Clone, Debug)]
