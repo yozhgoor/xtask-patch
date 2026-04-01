@@ -7,6 +7,7 @@ use std::{
 
 #[derive(Debug)]
 pub struct Manifest {
+    path: PathBuf,
     content: String,
 }
 
@@ -29,7 +30,7 @@ impl Manifest {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read content of manifest at {}", path.display()))?;
 
-        Ok(Manifest { content })
+        Ok(Manifest { path, content })
     }
 
     pub fn patches(&self) -> Vec<Patch> {
@@ -318,6 +319,11 @@ impl Manifest {
             self.content = lines_out.join("\n");
         }
     }
+
+    pub fn write(self) -> Result<()> {
+        fs::write(&self.path, self.content)
+            .with_context(|| format!("failed to write manifest at {}", self.path.display()))
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -360,6 +366,7 @@ baz = { path = "../baz" }
 xtask-watch = { path = "../xtask-watch" }"#;
 
         Manifest {
+            path: PathBuf::from("Cargo.toml"),
             content: content.to_string(),
         }
     }
