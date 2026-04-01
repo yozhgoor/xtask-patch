@@ -1,0 +1,21 @@
+[package]
+name = "my-project"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+resolver = "2"
+members = [
+  "xtask"
+]
+
+[dependencies]
+
+[patch."https://github.com/rustminded/xtask-watch"]
+#foo = { path = "../foo" }
+
+[patch."https://github.com/yozhgoor/xtask-no-warnings"]
+#bar = { path = "../bar" }
+
+[patch."https://github.com/rustminded/xtask-wasm"]
+#baz = { path = "../baz" }
