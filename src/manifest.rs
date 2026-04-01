@@ -88,6 +88,64 @@ impl Manifest {
 
         patches
     }
+
+    pub fn toggle(&mut self, package: &str) {
+        let mut output = String::with_capacity(self.content.len());
+        let mut in_patch = false;
+
+        for (idx, raw_line) in self.content.lines().enumerate() {
+            if idx > 0 {
+                output.push('\n');
+            }
+
+            let trimmed = raw_line.trim();
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                let header = &trimmed[1..trimmed.len() - 1];
+                in_patch = header.strip_prefix("patch.").is_some();
+                output.push_str(raw_line);
+                continue;
+            }
+
+            if !in_patch {
+                output.push_str(raw_line);
+                continue;
+            }
+
+            let Some(first_non_ws) = raw_line.find(|c: char| !c.is_whitespace()) else {
+                output.push_str(raw_line);
+                continue;
+            };
+
+            let (leading, rest) = raw_line.split_at(first_non_ws);
+            let (is_commented, rest_after_hash, rest_for_parse) =
+                if let Some(stripped) = rest.strip_prefix('#') {
+                    (true, stripped, stripped.trim_start())
+                } else {
+                    (false, rest, rest)
+                };
+
+            let Some((name, _)) = rest_for_parse.split_once('=') else {
+                output.push_str(raw_line);
+                continue;
+            };
+
+            if name.trim() != package {
+                output.push_str(raw_line);
+                continue;
+            }
+
+            if is_commented {
+                output.push_str(leading);
+                output.push_str(rest_after_hash);
+            } else {
+                output.push_str(leading);
+                output.push('#');
+                output.push_str(rest);
+            }
+        }
+
+        self.content = output;
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -156,6 +214,70 @@ xtask-watch = { path = "../xtask-watch" }"#;
                     source: "https://github.com/user/foo.git".to_string(),
                     package: "foo".to_string(),
                     active: false,
+                },
+                Patch {
+                    source: "crates-io".to_string(),
+                    package: "xtask-watch".to_string(),
+                    active: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn toggle_active_patch() {
+        let mut manifest = manifest();
+        manifest.toggle("bar");
+
+        assert_eq!(
+            manifest.patches(),
+            vec![
+                Patch {
+                    source: "https://github.com/user/bar.git".to_string(),
+                    package: "bar".to_string(),
+                    active: false,
+                },
+                Patch {
+                    source: "https://github.com/user/baz.git".to_string(),
+                    package: "baz".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/foo.git".to_string(),
+                    package: "foo".to_string(),
+                    active: false,
+                },
+                Patch {
+                    source: "crates-io".to_string(),
+                    package: "xtask-watch".to_string(),
+                    active: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn toggle_inactive_patch() {
+        let mut manifest = manifest();
+        manifest.toggle("foo");
+
+        assert_eq!(
+            manifest.patches(),
+            vec![
+                Patch {
+                    source: "https://github.com/user/bar.git".to_string(),
+                    package: "bar".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/baz.git".to_string(),
+                    package: "baz".to_string(),
+                    active: true,
+                },
+                Patch {
+                    source: "https://github.com/user/foo.git".to_string(),
+                    package: "foo".to_string(),
+                    active: true,
                 },
                 Patch {
                     source: "crates-io".to_string(),
