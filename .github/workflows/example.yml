@@ -5,10 +5,10 @@ on:
     branches: [ main ]
     paths:
       - "examples/demo/**"
-    pull_request:
-      branches: [ main ]
-      path:
-        - "examples/demo/**"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "examples/demo/**"
 
 defaults:
   run:
