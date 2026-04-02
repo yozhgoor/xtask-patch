@@ -10,12 +10,11 @@ members = [
 ]
 
 [dependencies]
+chrono = { git = "https://github.com/chronotope/chrono" }
+itertools = "0.14.0"
 
-[patch."https://github.com/rustminded/xtask-watch"]
-#foo = { path = "../foo" }
+[patch."https://github.com/chronotope/chrono.git"]
+#chrono = { path = "../chrono" }
 
-[patch."https://github.com/yozhgoor/xtask-no-warnings"]
-#bar = { path = "../bar" }
-
-[patch."https://github.com/rustminded/xtask-wasm"]
-#baz = { path = "../baz" }
+[patch.crates-io]
+#itertools = { path = "../itertools" }
