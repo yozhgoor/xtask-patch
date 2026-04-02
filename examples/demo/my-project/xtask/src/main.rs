@@ -36,23 +36,15 @@ fn main() -> Result<()> {
         if patches.is_empty() {
             println!("No available patches");
         } else {
-            for patch in manifest.patches() {
-                if patch.active {
-                    println!("- {} from {}", patch.package, patch.source);
-                } else {
-                    println!("- {} from {} (disabled)", patch.package, patch.source);
-                }
-            }
+            println!("{}", patches);
         }
     }
 
     if let Some(command) = cli.subcommands {
         match command {
-            Subcommands::Add(add) => {
-                manifest.add(add.source, add.package.as_ref(), add.path.as_ref())
-            }
-            Subcommands::Toggle { package } => manifest.toggle(package.as_ref()),
-            Subcommands::Remove { package } => manifest.remove(package.as_ref()),
+            Subcommands::Add(add) => manifest.add(add.source, add.package, add.path),
+            Subcommands::Toggle { package } => manifest.toggle(package),
+            Subcommands::Remove { package } => manifest.remove(package),
         }
 
         manifest.write()?;
