@@ -1,3 +1,4 @@
+use crate::{Patch, Patches};
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use std::{
@@ -33,8 +34,8 @@ impl Manifest {
         Ok(Manifest { path, content })
     }
 
-    pub fn patches(&self) -> Vec<Patch> {
-        let mut patches = Vec::new();
+    pub fn patches(&self) -> Patches {
+        let mut patches = Patches::new();
         let mut current_source: Option<String> = None;
 
         for raw_line in self.content.lines() {
@@ -93,12 +94,19 @@ impl Manifest {
         patches
     }
 
-    pub fn add(&mut self, source: Option<String>, package: &str, path: &Path) {
-        let target_source = source.unwrap_or_else(|| "crates-io".to_string());
-        let target_header = if target_source == "crates-io" {
+    pub fn add(
+        &mut self,
+        source: Option<String>,
+        package: impl AsRef<str>,
+        path: impl AsRef<Path>,
+    ) {
+        let source = source.unwrap_or_else(|| "crates-io".to_string());
+        let path = path.as_ref();
+        let package = package.as_ref();
+        let header = if source == "crates-io" {
             "[patch.crates-io]".to_string()
         } else {
-            format!("[patch.\"{}\"]", target_source)
+            format!("[patch.\"{}\"]", source)
         };
         let new_line = format!("{package} = {{ path = \"{}\" }}", path.display());
 
@@ -119,20 +127,19 @@ impl Manifest {
 
                 let header = &trimmed[1..trimmed.len() - 1];
                 if let Some(rest) = header.strip_prefix("patch.") {
-                    let source = rest.trim();
-                    let source = if let Some(s) =
-                        source.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
-                    {
-                        s
-                    } else if let Some(s) =
-                        source.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
-                    {
-                        s
-                    } else {
-                        source
-                    };
+                    let src = rest.trim();
+                    let src =
+                        if let Some(s) = src.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                            s
+                        } else if let Some(s) =
+                            src.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
+                        {
+                            s
+                        } else {
+                            src
+                        };
                     in_patch = true;
-                    in_target = source == target_source;
+                    in_target = src == source;
                     if in_target {
                         target_section_found = true;
                     }
@@ -184,14 +191,14 @@ impl Manifest {
             if !lines_out.last().map(|l| l.is_empty()).unwrap_or(true) {
                 lines_out.push(String::new());
             }
-            lines_out.push(target_header);
+            lines_out.push(header);
             lines_out.push(new_line);
         }
 
         self.content = lines_out.join("\n");
     }
 
-    pub fn toggle(&mut self, package: &str) {
+    pub fn toggle(&mut self, package: impl AsRef<str>) {
         let mut output = String::with_capacity(self.content.len());
         let mut in_patch = false;
 
@@ -231,7 +238,7 @@ impl Manifest {
                 continue;
             };
 
-            if name.trim() != package {
+            if name.trim() != package.as_ref() {
                 output.push_str(raw_line);
                 continue;
             }
@@ -249,7 +256,7 @@ impl Manifest {
         self.content = output;
     }
 
-    pub fn remove(&mut self, package: &str) {
+    pub fn remove(&mut self, package: impl AsRef<str>) {
         let mut lines_out: Vec<String> = Vec::new();
 
         let mut in_patch = false;
@@ -302,7 +309,7 @@ impl Manifest {
                 continue;
             };
 
-            if name.trim() == package {
+            if name.trim() == package.as_ref() {
                 removed = true;
                 continue;
             }
@@ -324,13 +331,6 @@ impl Manifest {
         fs::write(&self.path, self.content)
             .with_context(|| format!("failed to write manifest at {}", self.path.display()))
     }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct Patch {
-    pub source: String,
-    pub package: String,
-    pub active: bool,
 }
 
 #[cfg(test)]
@@ -378,7 +378,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
 
         assert_eq!(
             patches,
-            vec![
+            Patches(vec![
                 Patch {
                     source: "https://github.com/user/bar.git".to_string(),
                     package: "bar".to_string(),
@@ -399,7 +399,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
                     package: "xtask-watch".to_string(),
                     active: true,
                 },
-            ]
+            ])
         );
     }
 
@@ -411,7 +411,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
 
         assert_eq!(
             manifest.patches(),
-            vec![
+            Patches(vec![
                 Patch {
                     source: "https://github.com/user/bar.git".to_string(),
                     package: "bar".to_string(),
@@ -437,7 +437,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
                     package: "rab".to_string(),
                     active: true,
                 },
-            ]
+            ])
         );
         assert!(manifest.content.contains("rab = { path = \"../rab\" }"));
     }
@@ -454,7 +454,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
 
         assert_eq!(
             manifest.patches(),
-            vec![
+            Patches(vec![
                 Patch {
                     source: "https://github.com/user/bar.git".to_string(),
                     package: "bar".to_string(),
@@ -480,7 +480,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
                     package: "rab".to_string(),
                     active: true,
                 },
-            ]
+            ])
         );
         assert!(manifest.content.contains("rab = { path = \"../rab\" }"));
     }
@@ -492,7 +492,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
 
         assert_eq!(
             manifest.patches(),
-            vec![
+            Patches(vec![
                 Patch {
                     source: "https://github.com/user/bar.git".to_string(),
                     package: "bar".to_string(),
@@ -513,7 +513,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
                     package: "xtask-watch".to_string(),
                     active: true,
                 },
-            ]
+            ])
         );
     }
 
@@ -524,7 +524,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
 
         assert_eq!(
             manifest.patches(),
-            vec![
+            Patches(vec![
                 Patch {
                     source: "https://github.com/user/bar.git".to_string(),
                     package: "bar".to_string(),
@@ -545,7 +545,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
                     package: "xtask-watch".to_string(),
                     active: true,
                 },
-            ]
+            ])
         );
     }
 
@@ -556,7 +556,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
 
         assert_eq!(
             manifest.patches(),
-            vec![
+            Patches(vec![
                 Patch {
                     source: "https://github.com/user/bar.git".to_string(),
                     package: "bar".to_string(),
@@ -572,7 +572,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
                     package: "xtask-watch".to_string(),
                     active: true,
                 },
-            ]
+            ])
         );
         assert!(
             !manifest
