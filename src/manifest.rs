@@ -1,5 +1,4 @@
-use crate::{Patch, Patches};
-use anyhow::{Context, Result};
+use crate::{Error, Patch, Patches};
 use cargo_metadata::MetadataCommand;
 use std::{
     fs,
@@ -13,14 +12,14 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn new(path: Option<PathBuf>) -> Result<Self> {
+    pub fn new(path: Option<PathBuf>) -> Result<Self, Error> {
         let path = if let Some(path) = path {
             path
         } else {
             let metadata = MetadataCommand::new()
                 .no_deps()
                 .exec()
-                .context("failed to parse project's metadata")?;
+                .map_err(|source| Error::ParseMetadata { source })?;
 
             metadata
                 .workspace_root
@@ -28,8 +27,10 @@ impl Manifest {
                 .into_std_path_buf()
         };
 
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read content of manifest at {}", path.display()))?;
+        let content = fs::read_to_string(&path).map_err(|source| Error::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
 
         Ok(Manifest { path, content })
     }
@@ -99,10 +100,19 @@ impl Manifest {
         source: Option<String>,
         package: impl AsRef<str>,
         path: impl AsRef<Path>,
-    ) {
+    ) -> Result<(), Error> {
         let source = source.unwrap_or_else(|| "crates-io".to_string());
         let path = path.as_ref();
         let package = package.as_ref();
+        let sources = self.package_sources(package);
+
+        if sources.iter().any(|s| s == &source) {
+            return Err(Error::Exists {
+                package: package.to_string(),
+                src: source,
+            });
+        }
+
         let header = if source == "crates-io" {
             "[patch.crates-io]".to_string()
         } else {
@@ -170,8 +180,9 @@ impl Manifest {
             };
 
             let Some((name, _)) = rest_for_parse.split_once('=') else {
-                lines_out.push(raw_line.to_string());
-                continue;
+                return Err(Error::Parse {
+                    line: raw_line.to_string(),
+                });
             };
 
             if name.trim() == package && in_target {
@@ -196,11 +207,40 @@ impl Manifest {
         }
 
         self.content = lines_out.join("\n");
+
+        Ok(())
     }
 
-    pub fn toggle(&mut self, package: impl AsRef<str>) {
+    pub fn toggle(
+        &mut self,
+        source: Option<String>,
+        package: impl AsRef<str>,
+    ) -> Result<(), Error> {
+        let package = package.as_ref();
+        let sources = self.package_sources(package);
+
+        if sources.is_empty() {
+            return Err(Error::NotFound {
+                package: package.to_string(),
+            });
+        }
+
+        if let Some(ref src) = source {
+            if !sources.iter().any(|s| s == src) {
+                return Err(Error::NotFound {
+                    package: package.to_string(),
+                });
+            }
+        } else if sources.len() > 1 {
+            return Err(Error::Multiple {
+                package: package.to_string(),
+                sources,
+            });
+        }
+
         let mut output = String::with_capacity(self.content.len());
         let mut in_patch = false;
+        let mut current_source: Option<String> = None;
 
         for (idx, raw_line) in self.content.lines().enumerate() {
             if idx > 0 {
@@ -210,7 +250,8 @@ impl Manifest {
             let trimmed = raw_line.trim();
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 let header = &trimmed[1..trimmed.len() - 1];
-                in_patch = header.strip_prefix("patch.").is_some();
+                current_source = parse_patch_source(header).map(|s| s.to_string());
+                in_patch = current_source.is_some();
                 output.push_str(raw_line);
                 continue;
             }
@@ -234,11 +275,18 @@ impl Manifest {
                 };
 
             let Some((name, _)) = rest_for_parse.split_once('=') else {
-                output.push_str(raw_line);
-                continue;
+                return Err(Error::Parse {
+                    line: raw_line.to_string(),
+                });
             };
 
-            if name.trim() != package.as_ref() {
+            let source_ok = match (&source, &current_source) {
+                (Some(src), Some(current)) => src == current,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+
+            if !source_ok || name.trim() != package {
                 output.push_str(raw_line);
                 continue;
             }
@@ -254,12 +302,41 @@ impl Manifest {
         }
 
         self.content = output;
+
+        Ok(())
     }
 
-    pub fn remove(&mut self, package: impl AsRef<str>) {
+    pub fn remove(
+        &mut self,
+        source: Option<String>,
+        package: impl AsRef<str>,
+    ) -> Result<(), Error> {
+        let package = package.as_ref();
+        let sources = self.package_sources(package);
+
+        if sources.is_empty() {
+            return Err(Error::NotFound {
+                package: package.to_string(),
+            });
+        }
+
+        if let Some(ref src) = source {
+            if !sources.iter().any(|s| s == src) {
+                return Err(Error::NotFound {
+                    package: package.to_string(),
+                });
+            }
+        } else if sources.len() > 1 {
+            return Err(Error::Multiple {
+                package: package.to_string(),
+                sources,
+            });
+        }
+
         let mut lines_out: Vec<String> = Vec::new();
 
         let mut in_patch = false;
+        let mut current_source: Option<String> = None;
         let mut current_section: Vec<String> = Vec::new();
         let mut section_has_entries = false;
         let mut removed = false;
@@ -277,7 +354,8 @@ impl Manifest {
                 }
 
                 let header = &trimmed[1..trimmed.len() - 1];
-                in_patch = header.strip_prefix("patch.").is_some();
+                current_source = parse_patch_source(header).map(|s| s.to_string());
+                in_patch = current_source.is_some();
 
                 if in_patch {
                     current_section.push(raw_line.to_string());
@@ -305,11 +383,18 @@ impl Manifest {
             };
 
             let Some((name, _)) = rest_for_parse.split_once('=') else {
-                current_section.push(raw_line.to_string());
-                continue;
+                return Err(Error::Parse {
+                    line: raw_line.to_string(),
+                });
             };
 
-            if name.trim() == package.as_ref() {
+            let source_ok = match (&source, &current_source) {
+                (Some(src), Some(current)) => src == current,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+
+            if source_ok && name.trim() == package {
                 removed = true;
                 continue;
             }
@@ -324,12 +409,67 @@ impl Manifest {
 
         if removed {
             self.content = lines_out.join("\n");
+            Ok(())
+        } else {
+            Err(Error::NotFound {
+                package: package.to_string(),
+            })
         }
     }
 
-    pub fn write(self) -> Result<()> {
-        fs::write(&self.path, self.content)
-            .with_context(|| format!("failed to write manifest at {}", self.path.display()))
+    pub fn write(&self) -> Result<(), Error> {
+        fs::write(&self.path, &self.content).map_err(|source| Error::Write {
+            path: self.path.display().to_string(),
+            source,
+        })
+    }
+
+    fn package_sources(&self, package: &str) -> Vec<String> {
+        let mut sources = Vec::new();
+        let mut current_source: Option<String> = None;
+
+        for raw_line in self.content.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            if line.starts_with('[') && line.ends_with(']') {
+                let header = &line[1..line.len() - 1];
+                current_source = parse_patch_source(header).map(|s| s.to_string());
+                continue;
+            }
+
+            let Some(source) = current_source.as_ref() else {
+                continue;
+            };
+
+            let rest = line.strip_prefix('#').map(str::trim_start).unwrap_or(line);
+            let Some((name, _)) = rest.split_once('=') else {
+                continue;
+            };
+
+            if name.trim() == package && !sources.contains(source) {
+                sources.push(source.clone());
+            }
+        }
+
+        sources
+    }
+}
+
+fn parse_patch_source(header: &str) -> Option<&str> {
+    if let Some(rest) = header.strip_prefix("patch.") {
+        let source = rest.trim();
+        if let Some(s) = source.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            Some(s)
+        } else if let Some(s) = source.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+            Some(s)
+        } else {
+            Some(source)
+        }
+    } else {
+        None
     }
 }
 
@@ -407,7 +547,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
     fn add_crates_io() {
         let mut manifest = manifest();
         let path = PathBuf::from("../rab");
-        manifest.add(None, "rab", &path);
+        manifest.add(None, "rab", &path).unwrap();
 
         assert_eq!(
             manifest.patches(),
@@ -446,11 +586,13 @@ xtask-watch = { path = "../xtask-watch" }"#;
     fn add_repository() {
         let mut manifest = manifest();
         let path = PathBuf::from("../rab");
-        manifest.add(
-            Some("https://github.com/user/rab.git".to_string()),
-            "rab",
-            &path,
-        );
+        manifest
+            .add(
+                Some("https://github.com/user/rab.git".to_string()),
+                "rab",
+                &path,
+            )
+            .unwrap();
 
         assert_eq!(
             manifest.patches(),
@@ -488,7 +630,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
     #[test]
     fn toggle_active_patch() {
         let mut manifest = manifest();
-        manifest.toggle("bar");
+        manifest.toggle(None, "bar").unwrap();
 
         assert_eq!(
             manifest.patches(),
@@ -520,7 +662,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
     #[test]
     fn toggle_inactive_patch() {
         let mut manifest = manifest();
-        manifest.toggle("foo");
+        manifest.toggle(None, "foo").unwrap();
 
         assert_eq!(
             manifest.patches(),
@@ -552,7 +694,7 @@ xtask-watch = { path = "../xtask-watch" }"#;
     #[test]
     fn remove() {
         let mut manifest = manifest();
-        manifest.remove("baz");
+        manifest.remove(None, "baz").unwrap();
 
         assert_eq!(
             manifest.patches(),
@@ -579,5 +721,80 @@ xtask-watch = { path = "../xtask-watch" }"#;
                 .content
                 .contains("[patch.\"https://github.com/user/baz.git\"]")
         );
+    }
+
+    #[test]
+    fn toggle_not_found() {
+        let mut manifest = manifest();
+        let err = manifest.toggle(None, "nope").unwrap_err();
+        assert!(matches!(err, Error::NotFound { .. }));
+    }
+
+    #[test]
+    fn remove_not_found() {
+        let mut manifest = manifest();
+        let err = manifest.remove(None, "nope").unwrap_err();
+        assert!(matches!(err, Error::NotFound { .. }));
+    }
+
+    #[test]
+    fn add_exists() {
+        let mut manifest = manifest();
+        let path = PathBuf::from("../bar");
+        let err = manifest
+            .add(
+                Some("https://github.com/user/bar.git".to_string()),
+                "bar",
+                &path,
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Exists { .. }));
+    }
+
+    #[test]
+    fn toggle_multiple_sources() {
+        let content = r#"[patch.crates-io]
+foo = { path = "../foo" }
+
+[patch."https://github.com/user/foo.git"]
+foo = { path = "../foo2" }"#;
+
+        let mut manifest = Manifest {
+            path: PathBuf::from("Cargo.toml"),
+            content: content.to_string(),
+        };
+        let err = manifest.toggle(None, "foo").unwrap_err();
+        assert!(matches!(err, Error::Multiple { .. }));
+    }
+
+    fn manifest_with_bad_patch() -> Manifest {
+        let content = r#"[patch.crates-io]
+badline
+foo = { path = "../foo" }"#;
+        Manifest {
+            path: PathBuf::from("Cargo.toml"),
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn add_parse_error() {
+        let mut manifest = manifest_with_bad_patch();
+        let err = manifest.add(None, "bar", "../bar").unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }));
+    }
+
+    #[test]
+    fn toggle_parse_error() {
+        let mut manifest = manifest_with_bad_patch();
+        let err = manifest.toggle(None, "foo").unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }));
+    }
+
+    #[test]
+    fn remove_parse_error() {
+        let mut manifest = manifest_with_bad_patch();
+        let err = manifest.remove(None, "foo").unwrap_err();
+        assert!(matches!(err, Error::Parse { .. }));
     }
 }

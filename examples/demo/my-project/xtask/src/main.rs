@@ -15,15 +15,22 @@ struct Cli {
 #[derive(Subcommand, Clone, Debug)]
 enum Subcommands {
     Add(Add),
-    Toggle { package: String },
-    Remove { package: String },
+    Toggle(Pkg),
+    Remove(Pkg),
+}
+
+#[derive(Args, Clone, Debug)]
+struct Pkg {
+    #[arg(long, short)]
+    source: Option<String>,
+    name: String,
 }
 
 #[derive(Args, Clone, Debug)]
 struct Add {
     #[arg(long, short)]
     source: Option<String>,
-    package: String,
+    name: String,
     path: PathBuf,
 }
 
@@ -42,9 +49,9 @@ fn main() -> Result<()> {
 
     if let Some(command) = cli.subcommands {
         match command {
-            Subcommands::Add(add) => manifest.add(add.source, add.package, add.path),
-            Subcommands::Toggle { package } => manifest.toggle(package),
-            Subcommands::Remove { package } => manifest.remove(package),
+            Subcommands::Add(add) => manifest.add(add.source, add.name, add.path)?,
+            Subcommands::Toggle(pkg) => manifest.toggle(pkg.source, pkg.name)?,
+            Subcommands::Remove(pkg) => manifest.remove(pkg.source, pkg.name)?,
         }
 
         manifest.write()?;
